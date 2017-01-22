@@ -17,7 +17,6 @@ class PEOPLE_KIND:
     CRASH_QUEUE = 1
 class People:
     def __init__(self):
-        self.intime = 0.0
         self.wait_time = 0.0
         self.tot_time = 0.0
         self.flag = 0
@@ -244,6 +243,44 @@ class World:
         self.people_out = [0,0]
         self.people_ok = []
         self.last_check_t = 0.0
+        #init num
+        self.cpa = 1
+        self.cpb = 1
+        self.cna = 1
+        self.cnb = 1
+    def add_valid(self, p):
+        pa, pb, na, nb = p
+        if self.cpa + self.cna + pa + na >= MAX_QUEUE_SIZE[0]:
+            return False
+        #Assume b == c
+        if self.cpb + self.cnb + pb + nb >= MAX_QUEUE_SIZE[1]:
+            return False
+        f = lambda p : p > 0.0
+        if pa and not self.qexist(self.QS[0][0], f):
+            return False
+        if na and not self.qexist(self.QS[0][1], f):
+            return False
+        if pb and not (self.qexist(self.QS[1][0], f) or self.qexist(self.QS[2][0], f)):
+            return False
+        if nb and not (self.qexist(self.QS[1][1], f) or self.qexist(self.QS[2][1], f)):
+            return False
+        return True
+    def qexist(self, qs, f):
+        for q in qs:
+            if f(q.get_p()):
+                return True
+        return False
+    def dec_valid(self, p):
+        pa, pb, na, nb = p
+        if self.cpa - pa < 1:
+            return False
+        if self.cna - na < 1:
+            return False
+        if self.cpb - pb < 1:
+            return False
+        if self.cnb - nb < 1:
+            return False
+        return True
     def open(self, p):
         pa, pb, na, nb = p
         # (precheckA, prechceckB, normalA, normalB)
@@ -259,18 +296,21 @@ class World:
                     v.append(sq)
         '''
         if pa:
+            self.cpa += 1
             a, g = 0, 0
             mu, sig = PAR[a][g]
             sq = ServiceQueue(get_randn, (mu, sig))
             sq.opened = True
             self.QS[a][g].append(sq)
         if na:
+            self.cna += 1
             a, g = 0, 1
             mu, sig = PAR[a][g]
             sq = ServiceQueue(get_randn, (mu, sig))
             sq.opened = True
             self.QS[a][g].append(sq)
-        if pa:
+        if pb:
+            self.cpb += 1
             a, g = 1, 0
             mu, sig = PAR[a][g]
             sq = ServiceQueue(get_randn, (mu, sig))
@@ -282,7 +322,8 @@ class World:
             sq = ServiceQueue(get_randn, (mu, sig))
             sq.opened = True
             self.QS[a][g].append(sq)
-        if pb:
+        if nb:
+            self.cnb += 1
             a, g = 1, 1
             mu, sig = PAR[a][g]
             sq = ServiceQueue(get_randn, (mu, sig))
@@ -354,7 +395,6 @@ class World:
                 self.people_in[i] += 1
                 peo = People()
                 peo.flag = i
-                peo.intime = self.t
                 self.JoinQ(0, peo, True)
 
         for a in range(3): # 3 regions
@@ -393,21 +433,37 @@ class World:
         ]
         '''
         combines = []
-        for i in range(4 * 4):
+        for i in range(1, 4 * 4):
             combines.append((i & 8 > 0, i & 4 > 0, i & 2 > 0, i & 1 > 0))
 
-        interval = 0.1
+
         bestp = None
         minCost = np.inf
+
+        #combines exclude [F,F,F,F]
         for p in combines:
-            w = self.get_copy_world()
-            w.open(p)
-            for _ in range(int(self.PREDICT_TIME * 1.0 / interval)):
-                w.update(interval, False)
-            if w.cost < minCost:
-                minCost = w.cost
-                bestp = p
-        self.open(bestp)
+            if self.add_valid(p):
+                wcost = self.test_world(p)
+                if wcost < minCost:
+                    minCost = wcost
+                    bestp = p
+
+        if bestp:
+            notp = [False, False, False, False]
+            notCost = self.test_world(notp)
+            if minCost < notCost:
+                self.open(bestp)
+
+    def test_world(self, p):
+        interval = 0.1
+        #assume p is valid
+        w = self.get_copy_world()
+        w.open(p)
+        for _ in range(int(self.PREDICT_TIME * 1.0 / interval)):
+            w.update(interval, False)
+        return w.cost
+
+
 
 
 class Simulation():#threading.Thread):
