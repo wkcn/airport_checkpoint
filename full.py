@@ -27,6 +27,7 @@ class People:
 
 class ServiceQueue:
     CRASH_TIME_PER_PEOPLE = 4.0
+    WINDOW_SIZE = 10 * 60.0
     def __init__(self, func, par):
         self.num = 0
         self.func = func
@@ -48,14 +49,24 @@ class ServiceQueue:
         self.free_time = 0.0
         self.stable_time = 0.0 # p < 1
         self.tot_time = 0.0
+        self.opened = False # Default Close
+
+        self.push_rec = Queue.Queue()
+        self.push_rec_top = None
+
     def get_service_time(self):
         return self.func(self.par)
+    def running(self):
+        return self.opened or self.empty()
     def push(self, people):
         t = self.tot_time
         self.num += 1
-        self.push_num += 1
+        self.push_num += 1 # history push_num
         self.tot_push_interval += t - self.last_push_time
         self.last_push_time = t
+
+        self.push_rec.put((t, self.push_num))
+
         if random.randint(0,8) == 3:
             pass
             people.kind = PEOPLE_KIND.CRASH_QUEUE
@@ -117,16 +128,31 @@ class ServiceQueue:
             return self.tot_size * 1.0 / self.update_times
         return 0.0
     def avg_service_time(self):
+        '''
         if self.pop_num > 0:
             return self.tot_service_time * 1.0 / self.pop_num
         return 0.0
+        '''
+        return self.par[0]
     def service_rate(self):
         if self.avg_service_time() > 0:
             return 1.0 / self.avg_service_time()
         return 0.0
     def in_rate(self):
+        '''
         if self.tot_time > 0:
             return self.push_num * 1.0 / self.tot_time
+        return 0.0
+        '''
+        #using slide window
+        if self.push_rec.empty():
+            return 0.0
+        while self.push_rec_top == None or self.tot_time - self.push_rec_top[0] > self.WINDOW_SIZE:
+            self.push_rec_top = self.push_rec.get()
+        T = self.tot_time - self.push_rec_top[0]
+        n = self.push_num - self.push_rec_top[1]
+        if T > 0:
+            return n * 1.0 / T 
         return 0.0
     def out_rate(self):
         if self.tot_time > 0:
@@ -178,11 +204,114 @@ rpack_reg = (6.6701, 8.3678)
 PAR = [None for _ in range(3)]
 
 #A region parameter
-PAR[0] = [[tcheck for _ in range(1)], [tcheck for _ in range(1)]]
+#PAR[0] = [[tcheck for _ in range(8)], [tcheck for _ in range(8)]]
+PAR[0] = (tcheck, tcheck)
 #B region parameter
-PAR[1] = [[wave_tsa for _ in range(1)], [wave_reg for _ in range(2)]]
+#PAR[1] = [[wave_tsa for _ in range(12)], [wave_reg for _ in range(12)]]
+PAR[1] = (wave_tsa, wave_reg)
 #C region parameter
-PAR[2] = [[rpack_tsa for _ in range(1)],[rpack_reg for _ in range(1)]]
+#PAR[2] = [[rpack_tsa for _ in range(8)],[rpack_reg for _ in range(8)]]
+PAR[2] = (rpack_tsa, rpack_reg)
+
+MAX_QUEUE_SIZE = [8, 12, 12]
+INIT_QUEUE_SIZE = [(1,1), (1,1), (1,1)]
+
+class World:
+    # per minute
+    COST = 0.2 
+    PAY_OFFICER = 0.27 
+    PAY_MACHINE = 0.14 
+    def __init__(self):
+        self.QS = [[[],[]] for _ in range(3)]
+#build queue
+        for a in range(3): # 3 regions
+            for g in range(2): # 2 kinds of people
+                v = self.QS[a][g]
+                iq = INIT_QUEUE_SIZE[a][g]
+                mu, sig = PAR[a][g]
+                for _ in range(iq):
+                    sq = ServiceQueue(get_randn, (mu, sig))
+                    sq.opened = True
+                    v.append(sq)
+        self.enter_time = [get_rande(betas[i]) for i in range(2)]
+        self.t = 0.0
+        self.cost = 0.0
+        self.cost_s = [0.0, 0.0, 0.0]
+        self.people_in = [0,0]
+        self.people_out = [0,0]
+        self.people_ok = []
+    def JoinQ(self, qlayer, peo, anygo = False):
+        bestqid = None
+        bestnum = -1
+        for i in range(2):
+            if peo.flag == 1 and i != 1:
+                continue
+            if peo.flag == 0 and i != 0 and not anygo:
+                continue
+            for q in self.QS[qlayer][i]:
+                if q.opened:
+                    if q.size() < bestnum or bestqid == None:
+                        bestqid = q
+                        bestnum = q.size()
+        bestqid.push(peo)
+
+    def ut_cost(self):
+        j = 0.0
+        # PAX
+        n = 0
+        m = [0,0,0] # machine
+        for a in range(3): # 3 regions
+            for g in range(2): # 2 kinds of people
+                for q in self.QS[a][g]:
+                    n += q.size()
+                    if q.running():
+                        m[a] += 1
+        w1 = self.COST * 1.0 * n
+        # m[1] = m[2]
+        # B region and C region
+        w2 = (2 * self.PAY_OFFICER + self.PAY_MACHINE) * 1.0 * m[1] 
+        # id check
+        w3 = (1 * self.PAY_OFFICER ) * m[0]
+        #print w1, w2, w3
+        '''
+        self.cost_s[0] += w1
+        self.cost_s[1] += w2
+        self.cost_s[2] += w3
+        j += w1 + w2 + w3
+        return j / 60.0 # per second
+        '''
+        return (w1 / 60.0, w2 / 60.0, w3 / 60.0)
+
+    def update(self, interval):
+        self.t += interval
+        w1, w2, w3 = self.ut_cost()
+        self.cost += (w1 + w2 + w3) * interval
+        self.cost_s[0] += w1 * interval
+        self.cost_s[1] += w2 * interval
+        self.cost_s[2] += w3 * interval
+        for i in range(2):
+            if self.t >= self.enter_time[i]:
+                self.enter_time[i] += betas[i]
+                self.people_in[i] += 1
+                peo = People()
+                peo.flag = i
+                peo.intime = self.t
+                self.JoinQ(0, peo, False)
+
+        for a in range(3): # 3 regions
+            for g in range(2): # 2 kinds of people
+                v = self.QS[a][g]
+                for q in v:
+                    q.update(interval)
+                    if q.isok():
+                        opeo = q.pop()
+                        if a == 2:
+                            #go out C region
+                            self.people_out[opeo.flag] += 1
+                            self.people_ok.append(opeo)
+                        else:
+                            self.JoinQ(a + 1, opeo)
+
 
 class Simulation(threading.Thread):
     def __init__(self):
@@ -190,81 +319,29 @@ class Simulation(threading.Thread):
     def run(self):
         self.simulation()
     def simulation(self):
-        QS = [[[],[]] for _ in range(3)]
-#build queue
-        for a in range(3): # 3 regions
-            for g in range(2): # 2 kinds of people
-                v = QS[a][g]
-                for p in PAR[a][g]:
-                    mu, sig = p
-                    v.append(ServiceQueue(get_randn, (mu,sig)))
-
-        enter_time = [get_rande(betas[i]) for i in range(2)]
-
-        def JoinQ(qlayer, peo, anygo = False):
-            bestqid = None
-            bestnum = -1
-            for i in range(2):
-                if peo.flag == 1 and i != 1:
-                    continue
-                if peo.flag == 0 and i != 0 and not anygo:
-                    continue
-                for q in QS[qlayer][i]:
-                    if q.size() < bestnum or bestqid == None:
-                        bestqid = q
-                        bestnum = q.size()
-            bestqid.push(peo)
-
+        world = World()
         interval = 0.1
         need_time = 10 * 60# + 50
-        people_in = [0,0]
-        people_out = [0,0]
-        people_ok = []
-#for i in range(int(sim_time / interval)):
-        t = 0.0
         while True:
-            t += interval
-            if t > need_time:
+            if world.t > need_time:
                 break
-                if people_in[0] + people_in[1] == people_out[0] + people_out[1]:
-                    print "sim_time: %.1lf" % t
-                    break
-            if t < need_time:
-                for i in range(2):
-                    if t >= enter_time[i]:
-                        enter_time[i] += betas[i]
-                        people_in[i] += 1
-                        peo = People()
-                        peo.flag = i
-                        peo.intime = t
-                        JoinQ(0, peo, False)
+            world.update(interval)
 
-            for a in range(3): # 3 regions
-                for g in range(2): # 2 kinds of people
-                    v = QS[a][g]
-                    for q in v:
-                        q.update(interval)
-                        if q.isok():
-                            opeo = q.pop()
-                            if a == 2:
-                                #go out C region
-                                people_out[opeo.flag] += 1
-                                people_ok.append(opeo)
-                            else:
-                                JoinQ(a + 1, opeo)
+
+
         for a in range(3):
             print "=========="
             print "Region: %c" % chr(ord('A') + a)
             for g in range(2):
                 print " Kind: %s" % (["tsa", "reg"])[g]
-                v = QS[a][g]
+                v = world.QS[a][g]
                 for q in v:
                     print "  Avg_Size: %.1lf, WaitTime: %.1lf, ServiceTime: %.1lf" % (q.avg_size(), q.avg_wait_time(),q.avg_service_time())
                     print "  in/out/service(minute): %.3lf/%.3lf/%.3lf, p: %.1lf" % (q.in_rate() * 60, q.out_rate() * 60, q.service_rate() * 60, q.get_p())
                     print "  free/stable: %.2lf/%.2lf" % (q.free_time, q.stable_time)
         for i in range(2):
             print "OutK: %s" % (["tsa", "reg"])[i]
-            print "%d / %d" % (people_out[i], people_in[i])
+            print "%d / %d" % (world.people_out[i], world.people_in[i])
 
         min_wait_time = np.inf
         max_wait_time = -np.inf
@@ -273,7 +350,7 @@ class Simulation(threading.Thread):
         min_tot_time = np.inf
         max_tot_time = -np.inf
         tot_tot_time = 0.0
-        for p in people_ok:
+        for p in world.people_ok:
             min_wait_time = min(min_wait_time, p.wait_time)
             max_wait_time = max(max_wait_time, p.wait_time)
             tot_wait_time += p.wait_time
@@ -282,12 +359,16 @@ class Simulation(threading.Thread):
             max_tot_time = max(max_tot_time, p.tot_time)
             tot_tot_time += p.tot_time
 
-        people_ok_num = len(people_ok)
+        people_ok_num = len(world.people_ok)
         avg_wait_time = tot_wait_time * 1.0 / people_ok_num
         avg_tot_time = tot_tot_time * 1.0 / people_ok_num
 
         print min_wait_time, max_wait_time, avg_wait_time
         print min_tot_time, max_tot_time, avg_tot_time
+
+        print world.people_in, world.people_out
+        print "cost: %.1lf" % world.cost
+        print world.cost_s
 
         self.result = [avg_tot_time]
 
