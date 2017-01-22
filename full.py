@@ -223,6 +223,7 @@ class World:
     PAY_MACHINE = 0.14 
     # second
     CHECK_INTERVAL = 60 * 10.0
+    PREDICT_TIME = 10.0 * 60
     def __init__(self):
         self.QS = [[[],[]] for _ in range(3)]
 #build queue
@@ -243,6 +244,61 @@ class World:
         self.people_out = [0,0]
         self.people_ok = []
         self.last_check_t = 0.0
+    def open(self, p):
+        pa, pb, na, nb = p
+        # (precheckA, prechceckB, normalA, normalB)
+        '''
+        for a in range(3): # 3 regions
+            for g in range(2): # 2 kinds of people
+                v = self.QS[a][g]
+                iq = INIT_QUEUE_SIZE[a][g]
+                mu, sig = PAR[a][g]
+                for _ in range(iq):
+                    sq = ServiceQueue(get_randn, (mu, sig))
+                    sq.opened = True
+                    v.append(sq)
+        '''
+        if pa:
+            a, g = 0, 0
+            mu, sig = PAR[a][g]
+            sq = ServiceQueue(get_randn, (mu, sig))
+            sq.opened = True
+            self.QS[a][g].append(sq)
+        if na:
+            a, g = 0, 1
+            mu, sig = PAR[a][g]
+            sq = ServiceQueue(get_randn, (mu, sig))
+            sq.opened = True
+            self.QS[a][g].append(sq)
+        if pa:
+            a, g = 1, 0
+            mu, sig = PAR[a][g]
+            sq = ServiceQueue(get_randn, (mu, sig))
+            sq.opened = True
+            self.QS[a][g].append(sq)
+            self.balance(self.QS[a][g])
+            a, g = 2, 0
+            mu, sig = PAR[a][g]
+            sq = ServiceQueue(get_randn, (mu, sig))
+            sq.opened = True
+            self.QS[a][g].append(sq)
+        if pb:
+            a, g = 1, 1
+            mu, sig = PAR[a][g]
+            sq = ServiceQueue(get_randn, (mu, sig))
+            sq.opened = True
+            self.QS[a][g].append(sq)
+            self.balance(self.QS[a][g])
+            a, g = 2, 1
+            mu, sig = PAR[a][g]
+            sq = ServiceQueue(get_randn, (mu, sig))
+            sq.opened = True
+            self.QS[a][g].append(sq)
+
+    def balance(self, q):
+        #TODO
+        pass
+
     def JoinQ(self, qlayer, peo, anygo = False):
         bestqid = None
         bestnum = -1
@@ -285,7 +341,7 @@ class World:
         '''
         return (w1 / 60.0, w2 / 60.0, w3 / 60.0)
 
-    def update(self, interval):
+    def update(self, interval, allow_check = True):
         self.t += interval
         w1, w2, w3 = self.ut_cost()
         self.cost += (w1 + w2 + w3) * interval
@@ -299,7 +355,7 @@ class World:
                 peo = People()
                 peo.flag = i
                 peo.intime = self.t
-                self.JoinQ(0, peo, False)
+                self.JoinQ(0, peo, True)
 
         for a in range(3): # 3 regions
             for g in range(2): # 2 kinds of people
@@ -314,7 +370,7 @@ class World:
                             self.people_ok.append(opeo)
                         else:
                             self.JoinQ(a + 1, opeo)
-        if self.t - self.last_check_t > self.CHECK_INTERVAL:
+        if allow_check and self.t - self.last_check_t > self.CHECK_INTERVAL:
             #Check
             self.check()
             self.last_check_t = self.t
@@ -323,8 +379,35 @@ class World:
         #todo: update world beta
         return w
     def check(self):
-        w = self.get_copy_world()
-        return w
+        # (precheckA, prechceckB, normalA, normalB)
+        '''
+        combines = [
+                (0,0,0,0),
+                (0,0,1,0),
+                (0,0,1,1),
+                (0,0,0,1),
+                (0,1,0,0),
+                (0,1,1,0),
+                (0,1,0,1),
+                (0,1,1,1)
+        ]
+        '''
+        combines = []
+        for i in range(4 * 4):
+            combines.append((i & 8 > 0, i & 4 > 0, i & 2 > 0, i & 1 > 0))
+
+        interval = 0.1
+        bestp = None
+        minCost = np.inf
+        for p in combines:
+            w = self.get_copy_world()
+            w.open(p)
+            for _ in range(int(self.PREDICT_TIME * 1.0 / interval)):
+                w.update(interval, False)
+            if w.cost < minCost:
+                minCost = w.cost
+                bestp = p
+        self.open(bestp)
 
 
 class Simulation():#threading.Thread):
@@ -336,7 +419,7 @@ class Simulation():#threading.Thread):
     def simulation(self):
         world = World()
         interval = 0.1
-        need_time = 10 * 60# + 50
+        need_time = 60 * 60# + 50
         while True:
             if world.t > need_time:
                 break
