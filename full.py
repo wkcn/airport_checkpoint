@@ -1,7 +1,7 @@
 #coding=utf-8
 import numpy as np
 import time
-import Queue
+import NQueue as Queue
 import matplotlib.pyplot as plt
 import copy
 import random
@@ -55,7 +55,7 @@ class ServiceQueue:
         self.push_rec_top = None
 
     def get_service_time(self):
-        return self.func(self.par)
+        return max(0.0, self.func(self.par))
     def running(self):
         return self.opened or self.empty()
     def push(self, people):
@@ -221,6 +221,8 @@ class World:
     COST = 0.2 
     PAY_OFFICER = 0.27 
     PAY_MACHINE = 0.14 
+    # second
+    CHECK_INTERVAL = 60 * 10.0
     def __init__(self):
         self.QS = [[[],[]] for _ in range(3)]
 #build queue
@@ -240,6 +242,7 @@ class World:
         self.people_in = [0,0]
         self.people_out = [0,0]
         self.people_ok = []
+        self.last_check_t = 0.0
     def JoinQ(self, qlayer, peo, anygo = False):
         bestqid = None
         bestnum = -1
@@ -291,7 +294,7 @@ class World:
         self.cost_s[2] += w3 * interval
         for i in range(2):
             if self.t >= self.enter_time[i]:
-                self.enter_time[i] += betas[i]
+                self.enter_time[i] += get_rande(betas[i])
                 self.people_in[i] += 1
                 peo = People()
                 peo.flag = i
@@ -311,11 +314,23 @@ class World:
                             self.people_ok.append(opeo)
                         else:
                             self.JoinQ(a + 1, opeo)
+        if self.t - self.last_check_t > self.CHECK_INTERVAL:
+            #Check
+            self.check()
+            self.last_check_t = self.t
+    def get_copy_world(self):
+        w = copy.deepcopy(self) 
+        #todo: update world beta
+        return w
+    def check(self):
+        w = self.get_copy_world()
+        return w
 
 
-class Simulation(threading.Thread):
+class Simulation():#threading.Thread):
     def __init__(self):
-        threading.Thread.__init__(self)
+        pass
+        #threading.Thread.__init__(self)
     def run(self):
         self.simulation()
     def simulation(self):
