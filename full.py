@@ -56,7 +56,7 @@ class ServiceQueue:
     def get_service_time(self):
         return max(0.0, self.func(self.par))
     def running(self):
-        return self.opened or self.empty()
+        return self.opened or not self.empty()
     def push(self, people):
         t = self.tot_time
         self.num += 1
@@ -190,7 +190,6 @@ def AddNormal(a, b):
 
 beta_tsa = 9.1912# 信誉乘客 mean(delta_tsa)
 beta_reg = 12.9457# 普通乘客 mean(delta_reg)
-betas = [beta_tsa, beta_reg]
 
 tcheck = (11.2125, 3.7926)
 
@@ -225,7 +224,8 @@ class World:
     PREDICT_TIME = 10.0 * 60
     def __init__(self):
         self.QS = [[[],[]] for _ in range(3)]
-#build queue
+        self.betas = [beta_tsa, beta_reg]
+        #build queue
         for a in range(3): # 3 regions
             for g in range(2): # 2 kinds of people
                 v = self.QS[a][g]
@@ -235,7 +235,7 @@ class World:
                     sq = ServiceQueue(get_randn, (mu, sig))
                     sq.opened = True
                     v.append(sq)
-        self.enter_time = [get_rande(betas[i]) for i in range(2)]
+        self.enter_time = [get_rande(self.betas[i]) for i in range(2)]
         self.t = 0.0
         self.cost = 0.0
         self.cost_s = [0.0, 0.0, 0.0]
@@ -336,6 +336,35 @@ class World:
             sq.opened = True
             self.QS[a][g].append(sq)
 
+    def close(self, p):
+        pa, pb, na, nb = p
+        # (precheckA, prechceckB, normalA, normalB)
+        if pa:
+            a, g = 0, 0
+            self.QS[a][g][-1].opened = False
+        if na:
+            a, g = 0, 1
+            self.QS[a][g][-1].opened = False
+        if pb:
+            a, g = 1, 0
+            self.QS[a][g][-1].opened = False
+            a, g = 2, 0
+            self.QS[a][g][-1].opened = False
+        if nb:
+            a, g = 1, 1
+            self.QS[a][g][-1].opened = False
+            a, g = 2, 1
+            self.QS[a][g][-1].opened = False
+
+    def get_min_pq(self, qs):
+        best = None
+        minp = np.inf
+        for q in qs:
+            if q.get_p() < minp:
+                minp = q.get_p()
+                best = q
+        return best
+
     def balance(self, q):
         #TODO
         pass
@@ -391,7 +420,7 @@ class World:
         self.cost_s[2] += w3 * interval
         for i in range(2):
             if self.t >= self.enter_time[i]:
-                self.enter_time[i] += get_rande(betas[i])
+                self.enter_time[i] += get_rande(self.betas[i])
                 self.people_in[i] += 1
                 peo = People()
                 peo.flag = i
@@ -414,6 +443,30 @@ class World:
             #Check
             self.check()
             self.last_check_t = self.t
+        #delete empty queue
+        for a in range(3): # 3 regions
+            for g in range(2): # 2 kinds of people
+                dlist = []
+                qs = self.QS[a][g]
+                for i in range(len(qs)):
+                    if not qs[i].running():
+                        dlist.append(i)
+                if len(dlist):
+                    nqs = []
+                    for i in range(len(qs)):
+                        if i not in dlist:
+                            nqs.append(qs[i])
+                    self.QS[a][g] = nqs
+                    k = len(dlist)
+                    if a == 0 and g == 0:
+                        self.cpa -= k
+                    if a == 0 and g == 1:
+                        self.cna -= k
+                    if a == 1 and g == 0:
+                        self.cpb -= k
+                    if a == 1 and g == 1:
+                        self.cnb -= k
+
     def get_copy_world(self):
         w = copy.deepcopy(self) 
         #todo: update world beta
@@ -448,17 +501,75 @@ class World:
                     minCost = wcost
                     bestp = p
 
+
+        notCost = None
+        notOpen = True
+        dothing = False
+        notp = [False, False, False, False]
         if bestp:
-            notp = [False, False, False, False]
             notCost = self.test_world(notp)
             if minCost < notCost:
-                self.open(bestp)
+                if self.is_good_change(notCost, minCost):
+                    notOpen = False
+                    dothing = True
+                    self.open(bestp)
+                    print "Open: ", bestp, notCost, minCost - notCost
+                    nc = []
+                    for p in combines:
+                        conflict = False
+                        for i in range(4):
+                            if bestp[i] and p[i]:
+                                conflict = True
+                                break
+                        if not conflict:
+                            nc.append(p)
+                    bestp2, minCost2 = self.find_dec_best(nc)
+                    if minCost2 < minCost:
+                        if self.is_good_change(notCost, minCost2):
+                            self.close(bestp2)
+                            print "Then Close: ", bestp2, minCost, minCost2 - minCost
+        if notOpen:
+            bestp2, minCost2 = self.find_dec_best(combines)
+            if bestp2:
+                if notCost == None: 
+                    notCost = self.test_world(notp)
+                    if minCost2 < notCost:
+                        if self.is_good_change(notCost, minCost2):
+                            dothing = True
+                            self.close(bestp2)
+                            print "Close: ", bestp2, notCost, minCost2 - notCost
+        if not dothing:
+            print "No thing to do"
 
-    def test_world(self, p):
+    def is_good_change(self, noCost, bestCost):
+        noa = noCost - self.cost
+        cha = noCost - bestCost
+        r = cha * 1.0 / noa
+        return r > 0.25
+
+    def find_dec_best(self, combines):
+        bestp2 = None
+        minCost2 = np.inf
+        for p in combines:
+            if self.dec_valid(p):
+                wcost2 = self.test_world(p, False)
+                if wcost2 < minCost2:
+                    minCost2 = wcost2
+                    bestp2 = p
+        return bestp2, minCost2
+    def test_world(self, p, needopen = True):
         interval = 0.1
         #assume p is valid
         w = self.get_copy_world()
-        w.open(p)
+
+        w.betas[0] = 1.0 / w.QS[0][0][0].in_rate()
+        w.betas[1] = 1.0 / w.QS[0][1][0].in_rate()
+        #print w.betas
+        
+        if needopen:
+            w.open(p)
+        else:
+            w.close(p)
         for _ in range(int(self.PREDICT_TIME * 1.0 / interval)):
             w.update(interval, False)
         return w.cost
