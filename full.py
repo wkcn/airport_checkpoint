@@ -5,7 +5,27 @@ import NQueue as Queue
 import matplotlib.pyplot as plt
 import copy
 import random
-import threading
+
+need_time = 20 * 60# + 50
+
+beta_tsa = 9.1912# 信誉乘客 mean(delta_tsa)
+beta_reg = 12.9457# 普通乘客 mean(delta_reg)
+
+tcheck = (11.2125, 3.7926)
+
+wave_tsa = (7.5070, 4.7082) 
+wave_reg = (15.0141, 6.6583)
+
+rpack_tsa = (3.3350, 5.9169)
+rpack_reg = (6.6701, 8.3678)
+
+SLOWER_RATE = 0.0
+CRASH_QUEUE_RATE = 0.0
+
+MAX_QUEUE_SIZE = [8, 12, 12]
+INIT_QUEUE_SIZE = [(1,1), (1,1), (1,1)]
+
+PAR = [None for _ in range(3)]
 
 def get_randn(par):
     mean, std = par
@@ -21,6 +41,7 @@ class People:
         self.tot_time = 0.0
         self.flag = 0
         self.kind = PEOPLE_KIND.NORMAL
+        self.slower = False
 
 
 
@@ -32,8 +53,8 @@ class ServiceQueue:
         self.func = func
         self.par = copy.copy(par)
         self.single_time = 0.0
-        self.ok_time = self.get_service_time()
         self.queue = Queue.Queue()
+        self.ok_time = self.get_service_time()
         self.push_num = 0
         self.pop_num = 0
         self.pop_tot_time = 0.0
@@ -54,7 +75,11 @@ class ServiceQueue:
         self.push_rec_top = None
 
     def get_service_time(self):
-        return max(0.0, self.func(self.par))
+        stime = max(1.0, self.func(self.par))
+        if not self.queue.empty():
+            if self.queue.top()[0].slower:
+                stime *= 1.5
+        return stime
     def running(self):
         return self.opened or not self.empty()
     def push(self, people):
@@ -66,9 +91,6 @@ class ServiceQueue:
 
         self.push_rec.put((t, self.push_num))
 
-        if random.randint(0,8) == 3:
-            pass
-            people.kind = PEOPLE_KIND.CRASH_QUEUE
         if people.kind == PEOPLE_KIND.NORMAL:
             self.queue.put((people, t))
         elif people.kind == PEOPLE_KIND.CRASH_QUEUE:
@@ -106,7 +128,6 @@ class ServiceQueue:
         #print "out: %.1lf" % self.single_time
         self.tot_pop_interval += t - self.last_pop_time
         self.last_pop_time = t
-        self.single_time = 0.0 # -delay
         peo,intime = self.queue.get() 
         tot_time = max(t - intime, 0.0)
         wait_time = max(t - intime - self.ok_time, 0.0)
@@ -114,11 +135,15 @@ class ServiceQueue:
         self.pop_wait_time += wait_time 
         self.tot_service_time += self.ok_time
         self.pop_num += 1
+
+        self.single_time = 0.0 # -delay
         self.ok_time = max(0.0, self.get_service_time()) # may be minus ? 
+
         self.num -= 1
 
         peo.tot_time += tot_time 
         peo.wait_time += wait_time 
+
         return peo
     def size(self):
         return self.num
@@ -188,19 +213,6 @@ def AddNormal(a, b):
     sig = np.sqrt(a[1] ** 2 + b[1] ** 2)
     return (mu, sig)
 
-beta_tsa = 9.1912# 信誉乘客 mean(delta_tsa)
-beta_reg = 12.9457# 普通乘客 mean(delta_reg)
-
-tcheck = (11.2125, 3.7926)
-
-wave_tsa = (7.5070, 4.7082) 
-wave_reg = (15.0141, 6.6583)
-
-rpack_tsa = (3.3350, 5.9169)
-rpack_reg = (6.6701, 8.3678)
-
-PAR = [None for _ in range(3)]
-
 #A region parameter
 #PAR[0] = [[tcheck for _ in range(8)], [tcheck for _ in range(8)]]
 PAR[0] = (tcheck, tcheck)
@@ -211,8 +223,6 @@ PAR[1] = (wave_tsa, wave_reg)
 #PAR[2] = [[rpack_tsa for _ in range(8)],[rpack_reg for _ in range(8)]]
 PAR[2] = (rpack_tsa, rpack_reg)
 
-MAX_QUEUE_SIZE = [8, 12, 12]
-INIT_QUEUE_SIZE = [(1,1), (1,1), (1,1)]
 
 class World:
     # per minute
@@ -241,13 +251,24 @@ class World:
         self.cost_s = [0.0, 0.0, 0.0]
         self.people_in = [0,0]
         self.people_out = [0,0]
-        self.people_ok = []
+
+        sn = 20
+        self.people_out_tot_time = [Queue.SQueue(sn),Queue.SQueue(sn)]
+        self.people_out_wait_time = [Queue.SQueue(sn), Queue.SQueue(sn)]
+
+        self.people_all_tot_time = Queue.SQueue(sn)
+        self.people_all_wait_time = Queue.SQueue(sn)
+
         self.last_check_t = 0.0
         #init num
-        self.cpa = 1
-        self.cpb = 1
-        self.cna = 1
-        self.cnb = 1
+        self.cpa = INIT_QUEUE_SIZE[0][0]
+        self.cpb = INIT_QUEUE_SIZE[1][0]
+        self.cna = INIT_QUEUE_SIZE[0][1]
+        self.cnb = INIT_QUEUE_SIZE[1][1]
+        #record: 
+        self.rec_io = [] # [(in, out), ...]
+        self.rec_cost = []
+        self.rec_avg_wait_time = []
     def add_valid(self, p):
         pa, pb, na, nb = p
         if self.cpa + self.cna + pa + na >= MAX_QUEUE_SIZE[0]:
@@ -424,6 +445,9 @@ class World:
                 self.people_in[i] += 1
                 peo = People()
                 peo.flag = i
+                peo.slower = (random.random() < SLOWER_RATE)
+                if random.random() < CRASH_QUEUE_RATE:
+                    peo.kind = PEOPLE_KIND.CRASH_QUEUE
                 self.JoinQ(0, peo, True)
 
         for a in range(3): # 3 regions
@@ -436,13 +460,23 @@ class World:
                         if a == 2:
                             #go out C region
                             self.people_out[opeo.flag] += 1
-                            self.people_ok.append(opeo)
+
+                            if allow_check:
+                                self.people_out_tot_time[opeo.flag].put(opeo.tot_time)
+                                self.people_out_wait_time[opeo.flag].put(opeo.wait_time)
+                                self.people_all_tot_time.put(opeo.tot_time)
+                                self.people_all_wait_time.put(opeo.wait_time)
                         else:
                             self.JoinQ(a + 1, opeo)
         if allow_check and self.t - self.last_check_t > self.CHECK_INTERVAL:
             #Check
             self.check()
             self.last_check_t = self.t
+        self.delete_empty_queue()
+        if allow_check:
+            self.record()
+
+    def delete_empty_queue(self):
         #delete empty queue
         for a in range(3): # 3 regions
             for g in range(2): # 2 kinds of people
@@ -466,6 +500,13 @@ class World:
                         self.cpb -= k
                     if a == 1 and g == 1:
                         self.cnb -= k
+    def record(self):
+        #recording
+        cin = self.people_in[0] + self.people_in[1]
+        cout = self.people_out[0] + self.people_out[1]
+        self.rec_io.append( (cin, cout) )
+        self.rec_cost.append(self.cost)
+        self.rec_avg_wait_time.append(self.people_all_wait_time.get_avg())
 
     def get_copy_world(self):
         w = copy.deepcopy(self) 
@@ -586,7 +627,6 @@ class Simulation():#threading.Thread):
     def simulation(self):
         world = World()
         interval = 0.1
-        need_time = 60 * 60# + 50
         while True:
             if world.t > need_time:
                 break
@@ -608,34 +648,11 @@ class Simulation():#threading.Thread):
             print "OutK: %s" % (["tsa", "reg"])[i]
             print "%d / %d" % (world.people_out[i], world.people_in[i])
 
-        min_wait_time = np.inf
-        max_wait_time = -np.inf
-        tot_wait_time = 0.0
-
-        min_tot_time = np.inf
-        max_tot_time = -np.inf
-        tot_tot_time = 0.0
-        for p in world.people_ok:
-            min_wait_time = min(min_wait_time, p.wait_time)
-            max_wait_time = max(max_wait_time, p.wait_time)
-            tot_wait_time += p.wait_time
-
-            min_tot_time = min(min_tot_time, p.tot_time)
-            max_tot_time = max(max_tot_time, p.tot_time)
-            tot_tot_time += p.tot_time
-
-        people_ok_num = len(world.people_ok)
-        avg_wait_time = tot_wait_time * 1.0 / people_ok_num
-        avg_tot_time = tot_tot_time * 1.0 / people_ok_num
-
-        print min_wait_time, max_wait_time, avg_wait_time
-        print min_tot_time, max_tot_time, avg_tot_time
-
         print world.people_in, world.people_out
         print "cost: %.1lf" % world.cost
         print world.cost_s
 
-        self.result = [avg_tot_time]
+        self.result = [world.people_all_tot_time.get_avg()]
 
 
 sims = [Simulation() for _ in range(1)]

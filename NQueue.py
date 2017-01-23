@@ -50,8 +50,33 @@ class Queue:
         return x
     def qsize(self):
         return self.siz
+    def top(self):
+        return self.data[0]
+
+class SQueue():
+    def __init__(self, sampleNum):
+        self.sampleNum = sampleNum
+        self.data = [None for _ in range(sampleNum)]
+        self.i = 0
+        self.wt = 0
+    def get_avg(self):
+        if self.wt == 0:
+            return 0.0
+        s = 0.0
+        for i in range(self.wt):
+            s += self.data[i]
+        return s * 1.0 / self.wt
+
+    def put(self, x):
+        if self.wt < self.sampleNum:
+            self.wt += 1
+        self.data[self.i] = x
+        self.i += 1
+        if self.i >= self.sampleNum:
+            self.i = 0
 
 if __name__ == "__main__":
+    '''
     import time
     def test(q):
         t = time.time()
@@ -70,3 +95,14 @@ if __name__ == "__main__":
     test(Queue())
     test(Queue2())
 
+    '''
+    import time
+    t = time.time()
+    q = SQueue(7)
+    for i in range(100):
+        q.put(i)
+    for k in q.data:
+        print k,
+    print "\n===="
+    print q.get_avg()
+    print time.time() - t
